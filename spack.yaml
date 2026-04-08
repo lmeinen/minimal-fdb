@@ -1,0 +1,21 @@
+spack:
+  concretizer:
+    unify: when_possible
+  specs:
+  - fdb@5.19.2
+  - gribjump@0.10.3
+  - eckit@2.0.2 linalg=none compression=lz4 +curl +ssl
+  - metkit@1.16.3-levelist
+  - eccodes@2.46.0 jp2k=none ~fortran +pthreads +aec +geo
+  - ecbuild@3.13.1
+  packages:
+    all:
+      require: '%gcc@13.3'
+      target:
+      - x86_64_v3
+      variants:
+      - ~mpi
+  view: /opt/spack-view
+  config:
+    install_tree:
+      root: /opt/spack-root

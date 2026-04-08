@@ -1,0 +1,17 @@
+---
+type: catalogue
+serverPort: 30040
+dataPortStart: 30042
+dataPortCount: 1
+supportedConnections: [1]
+stores:
+  - default: store:30041
+    serveLocalData: true
+engine: toc
+schema: /etc/fdb/schema
+spaces:
+- handler: Default
+  roots:
+  - path: /opt/fdb-root
+    writable: true
+    visit: true

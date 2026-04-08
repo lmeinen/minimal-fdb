@@ -1,0 +1,12 @@
+attrs==26.1.0
+cffi==2.0.0
+eccodes==2.46.0
+eccodeslib==2.46.2.19
+eckitlib==2.0.7.19
+fdb5lib==5.21.0.19
+findlibs==0.1.2
+metkitlib==1.17.3.19
+numpy==2.4.4
+pycparser==3.0
+pyfdb==5.21.0.19
+PyYAML==6.0.3

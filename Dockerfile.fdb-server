@@ -1,0 +1,128 @@
+# syntax=docker/dockerfile:1
+#
+# Self-contained fdb-server image.
+#
+# Build context requirements:
+#   eccodes_definitions.edzw-<ECCODES_COSMO_DEFS_TAG>.tar.bz2   (local copy)
+#   config/schema                                                 (FDB schema)
+#
+# Role config is mounted at runtime via docker-compose; see docker-compose.yml.
+#
+# Build:
+#   docker build -f Dockerfile.fdb-server -t fdb-server:5.19 .
+#
+# Run (via compose):
+#   docker compose up
+
+
+#######################
+#  SPACK-DEPENDENCIES #
+#######################
+
+FROM dockerhub.apps.cp.meteoswiss.ch/mch/ubuntu-noble AS spack-dependencies
+
+ARG UENV_TAG=fdb/5.19_build_23819963580
+ARG FDB_VERSION=5.19
+ARG ECCODES_COSMO_DEFS_TAG=2.44.0-1
+ARG MARS_DEFS_TAG=v0.0.2
+ARG SPACK_REF=develop
+
+WORKDIR /opt
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get -o Acquire::http::Timeout=30 -o Acquire::Retries=3 update --assume-yes --quiet && \
+    apt-get install --assume-yes --no-install-recommends --quiet \
+    ca-certificates git wget bzip2 python3 python3-yaml \
+    tar build-essential cmake file gfortran && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --shallow-exclude v1.1.0 --branch "${SPACK_REF}" \
+    https://github.com/spack/spack.git /opt/spack \
+    && git -C /opt/spack checkout 8ca06da
+
+RUN git clone --depth 1 --branch "${UENV_TAG}" \
+    https://github.com/C2SM/software-stack-recipes.git recipes-repo
+
+WORKDIR /opt/recipes-repo/recipes/fdb/${FDB_VERSION}
+
+# Copy dependency specifications
+COPY spack.yaml /opt/recipes-repo/recipes/fdb/${FDB_VERSION}
+# Remove client-only config files left by the recipe checkout.
+RUN rm -f compilers.yaml config.yaml environments.yaml packages.yaml post-install
+
+# Pull from buildcache (read-only, no credentials) but do not push.
+RUN . /opt/spack/share/spack/setup-env.sh; \
+    test -d repo/packages || { echo 'no repo/packages found'; exit 1; }; \
+    test -f repo/repo.yaml || printf "repo:\n  namespace: c2sm\n" > repo/repo.yaml; \
+    spack env activate -d .; \
+    spack repo add /opt/recipes-repo/recipes/fdb/${FDB_VERSION}/repo; \
+    spack mirror add spack-build-cache \
+    --unsigned \
+    oci://docker-intern-nexus.meteoswiss.ch/numericalweatherpredictions/spack-build-cache; \
+    spack external find; \
+    spack compiler find; \
+    spack concretize --force; \
+    spack install --fail-fast --no-checksum; \
+    spack gc -y
+
+# ecCodes COSMO definitions (local tarball required in build context).
+RUN mkdir -p /opt/eccodes-cosmo
+COPY definitions.edzw-${ECCODES_COSMO_DEFS_TAG}.tar.gz /opt/eccodes-cosmo/
+RUN cd /opt/eccodes-cosmo && \
+    tar -xzf "definitions.edzw-${ECCODES_COSMO_DEFS_TAG}.tar.gz" && \
+    mv "definitions.edzw-${ECCODES_COSMO_DEFS_TAG}" definitions && \
+    rm -f "definitions.edzw-${ECCODES_COSMO_DEFS_TAG}.tar.gz"
+
+RUN git clone --depth 1 --branch "${MARS_DEFS_TAG}" \
+    https://github.com/MeteoSwiss/eccodes-cosmo-mars.git /opt/eccodes-cosmo-mars
+
+# Expand paramids and language tables for MeteoSwiss models.
+RUN metkit_dir="/opt/spack-view/share/metkit" && \
+    python3 /opt/recipes-repo/recipes/fdb/${FDB_VERSION}/meta/private/expand_params.py \
+    "${metkit_dir}/paramids.yaml" \
+    "/opt/eccodes-cosmo/definitions/grib2/shortName.def,/opt/eccodes-cosmo/definitions/grib2/localConcepts/edzw/shortName.def" && \
+    python3 /opt/recipes-repo/recipes/fdb/${FDB_VERSION}/meta/private/expand_language.py \
+    "${metkit_dir}/language.yaml"
+
+
+################
+#  FDB-SERVER  #
+################
+
+FROM dockerhub.apps.cp.meteoswiss.ch/mch/ubuntu-noble AS fdb-server
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update --assume-yes --quiet && \
+    apt-get install --assume-yes --quiet --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /opt/fdb-root
+
+COPY --from=spack-dependencies /opt/spack-root                      /opt/spack-root
+COPY --from=spack-dependencies /opt/spack-view                      /opt/spack-view
+COPY --from=spack-dependencies /opt/eccodes-cosmo/definitions       /opt/eccodes-cosmo/definitions
+COPY --from=spack-dependencies /opt/eccodes-cosmo-mars/definitions  /opt/eccodes-cosmo-mars/definitions
+
+# Fix OpenSSL load-order race: Python's ssl module loads the system libssl
+# before pyfdb/libcurl can load the Spack-built one via RPATH. Registering
+# the Spack lib with ldconfig makes it win unconditionally.
+RUN openssl_lib=$(find /opt/spack-root -name "libssl.so.3" | head -1 | xargs dirname) && \
+    echo "${openssl_lib}" > /etc/ld.so.conf.d/spack-openssl.conf && \
+    ldconfig
+
+# Schema baked in from config/schema in the build context.
+COPY config/schema /etc/fdb/schema
+
+ENV PATH=/opt/spack-view/bin:${PATH} \
+    ECCODES_DEFINITION_PATH=/opt/eccodes-cosmo/definitions:/opt/eccodes-cosmo-mars/definitions:/opt/spack-view/share/eccodes/definitions \
+    ECCODES_DIR=/opt/spack-view \
+    FDB5_DIR=/opt/spack-view
+
+COPY start-server.sh /usr/local/bin/start-server.sh
+RUN chmod +x /usr/local/bin/start-server.sh
+
+ENTRYPOINT ["/usr/local/bin/start-server.sh"]
+CMD ["store_1"]

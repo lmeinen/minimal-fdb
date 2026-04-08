@@ -1,0 +1,36 @@
+services:
+  catalogue:
+    build:
+      context: .
+      dockerfile: Dockerfile.fdb-server
+    image: fdb-server:5.19
+    command: catalogue
+    ports:
+      - "30040:30040"   # serverPort
+      - "30042:30042"   # dataPortStart
+    volumes:
+      - fdb-root:/opt/fdb-root
+      # Config is mounted directly to the path fdb-server reads under FDB_HOME.
+      - ./config/catalogue/config.yaml:/etc/fdb/config.yaml:ro
+    networks:
+      - fdb
+
+  store:
+    image: fdb-server:5.19
+    command: store_1
+    ports:
+      - "30041:30041"   # serverPort
+      - "30043:30043"   # dataPortStart
+    volumes:
+      - fdb-root:/opt/fdb-root
+      - ./config/store_1/config.yaml:/etc/fdb/config.yaml:ro
+    networks:
+      - fdb
+    depends_on:
+      - catalogue
+
+volumes:
+  fdb-root:
+
+networks:
+  fdb:

@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+#
+# FDB archive client image.
+#
+# Build context requirements:
+#   archive-file.py
+#   requirements.txt
+#
+# Build:
+#   podman build -f Dockerfile.fdb-archive -t fdb-archive:5.19 .
+#
+# Run:
+#   podman run --rm --network fdb-server_fdb \
+#     -v ./data:/data:ro \
+#     fdb-archive:5.19 /data/my-file.grib
+
+
+FROM fdb-server:5.19 AS fdb-archive
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update --assume-yes --quiet && \
+    apt-get install --assume-yes --quiet --no-install-recommends \
+        python3 \
+        python3-venv \
+        python3-pip \
+        python-is-python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:${PATH}
+
+COPY requirements.txt .
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt --no-cache-dir --no-deps
+
+COPY archive-file.py /opt/archive-file.py
+
+ENTRYPOINT ["python", "/opt/archive-file.py"]
